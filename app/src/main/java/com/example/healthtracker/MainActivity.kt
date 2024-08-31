@@ -1,6 +1,12 @@
 package com.example.healthtracker
 
+import android.app.Application
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.hardware.Sensor
+import android.hardware.SensorManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -61,13 +67,66 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.google.android.gms.location.FusedLocationProviderClient
+import com.google.android.gms.location.LocationServices
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
-
+import com.example.healthtracker.StepTracker
+import androidx.appcompat.app.AppCompatActivity
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CornerSize
+import androidx.compose.foundation.shape.CutCornerShape
+import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Mail
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Divider
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldColors
+import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.material3.VerticalDivider
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.withContext
+import java.sql.Connection
+import java.sql.DriverManager
+import java.sql.ResultSet
+import androidx.room.*
+import androidx.room.RoomDatabase
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.withContext
+import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.runBlocking
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
+import kotlinx.serialization.json.*
 
 
 val Context.userDataStore: DataStore<Preferences> by preferencesDataStore(name = "userData")
+
+val db_params = mapOf(
+    "host" to "healthtracker.c1k2agywgaxv.us-east-2.rds.amazonaws.com",
+    "database" to "postgres",
+    "user" to "postgres",
+    "password" to "12345678"  // Replace with your actual password
+)
 
 
 class MainActivity : ComponentActivity() {
@@ -76,11 +135,69 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             HealthTrackerTheme {
-                MainScreen()
+                ScreenNavigator()
             }
         }
     }
 }
+
+@Composable
+fun ScreenNavigator() {
+    val context = LocalContext.current
+    val userIDKey = intPreferencesKey("id")
+    val userID by context.userDataStore.data
+        .map { preferences ->
+            preferences[userIDKey] ?: -42
+        }.collectAsState(initial = 0) as State<Int>
+    val userEmailKey = stringPreferencesKey("email")
+    val userEmail by context.userDataStore.data
+        .map { preferences ->
+            preferences[userEmailKey] ?: ""
+        }.collectAsState(initial = "") as State<String>
+    val userPasswordKey = stringPreferencesKey("password")
+    val userPassword by context.userDataStore.data
+        .map { preferences ->
+            preferences[userPasswordKey] ?: ""
+        }.collectAsState(initial = "") as State<String>
+    val userUsernameKey = stringPreferencesKey("password")
+    val userUsername by context.userDataStore.data
+        .map { preferences ->
+            preferences[userUsernameKey] ?: ""
+        }.collectAsState(initial = "") as State<String>
+
+    if (userUsername == "" && userID == -42
+        && userPassword =="" && userUsername == "") {
+
+        RegistrationScreen(context, userIDKey, userEmailKey,
+            userPasswordKey, userUsernameKey)
+        Text("Hello")
+
+    } else {
+        MainScreen()
+    }
+}
+
+
+@Composable
+fun NonAdjustableQuantity(achievementText:String,context: Context,
+                        backgroundColor: Color, innerColor: Color, quantityName: String) {
+    val currentQuantityKey = intPreferencesKey(achievementText)
+    val currentQuantity by context.userDataStore.data
+        .map { preferences ->
+            preferences[currentQuantityKey] ?: 0
+        }.collectAsState(initial = 0) as State<Int>
+    Row (verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .wrapContentWidth(Alignment.End)) {
+        Text("${currentQuantity} $quantityName",
+            color = innerColor,
+            fontSize = 18.sp,
+            modifier = Modifier
+                .padding(10.dp))
+    }
+}
+
 
 @Composable
 fun AdjustableQuantity(achievementText:String,context: Context, coroutineScope: CoroutineScope,
@@ -137,6 +254,22 @@ fun AdjustableQuantity(achievementText:String,context: Context, coroutineScope: 
     }
 }
 
+private fun isServiceRunning(context: Context, serviceClass: Class<*>): Boolean {
+    val manager = context.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+    val runningServices = manager.getRunningServices(Integer.MAX_VALUE)
+
+    if (runningServices != null) {
+        for (service in runningServices) {
+            if (serviceClass.name == service.service.className) {
+                return true
+            }
+        }
+    }
+
+    return false
+}
+
+
 @Composable
 fun HealthStat(achievementText: String, backgroundColor: Color,
                iconResId: Int, innerColor: Color, context: Context
@@ -180,6 +313,58 @@ fun HealthStat(achievementText: String, backgroundColor: Color,
             } else if (achievementText=="Exercise") {
                 AdjustableQuantity(achievementText, context, coroutineScope,
                     backgroundColor, innerColor, "min", 15)
+            } else if (achievementText == "Steps") {
+                val context = LocalContext.current
+                var stepCount by remember { mutableStateOf(0) }
+                var hasStepCounter by remember { mutableStateOf(false) }
+
+                // Check for step counter sensor
+                LaunchedEffect(Unit) {
+                    val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
+                    val stepCounter = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)
+                    hasStepCounter = (stepCounter != null)
+                }
+
+                if (hasStepCounter) {
+                    // Register broadcast receiver
+                    val broadcastReceiver = remember {
+                        object : BroadcastReceiver() {
+                            override fun onReceive(context: Context?, intent: Intent?) {
+                                if (intent?.action == StepCounterService.ACTION_STEP_COUNT_UPDATE) {
+                                    stepCount = intent.getIntExtra(StepCounterService.EXTRA_STEP_COUNT, 0)
+                                }
+                            }
+                        }
+                    }
+
+                    // Start service and register receiver
+                    DisposableEffect(key1 = context) {
+                        val filter = IntentFilter(StepCounterService.ACTION_STEP_COUNT_UPDATE)
+                        context.registerReceiver(
+                            broadcastReceiver, filter,
+                            Context.RECEIVER_NOT_EXPORTED
+                        )
+
+                        if (!isServiceRunning(context, StepCounterService::class.java)) {
+                            val intent = Intent(context, StepCounterService::class.java)
+                            context.startService(intent)
+                        }
+
+                        onDispose {
+                            context.unregisterReceiver(broadcastReceiver)
+                        }
+                    }
+                    NonAdjustableQuantity(achievementText, context,
+                        backgroundColor, innerColor, "$stepCount")
+                } else {
+                    // Alternative for devices without step counter
+                    Text(
+                        "Step counter not available",
+                        color = innerColor,
+                        fontSize = 16.sp,
+                        modifier = Modifier.padding(10.dp)
+                    )
+                }
             }
         }
     }
@@ -202,8 +387,8 @@ fun MainScreen() {
                     .drawBehind {
                         drawLine(
                             color = Color(0xFF7E57C2),
-                            start = Offset(0f-100, size.height),
-                            end = Offset(size.width+300, size.height),
+                            start = Offset(0f - 100, size.height),
+                            end = Offset(size.width + 300, size.height),
                             strokeWidth = 2.dp.toPx()
                         )
                     }
@@ -220,10 +405,299 @@ fun MainScreen() {
     }
 }
 
+
+@Composable
+fun RegScreenButton(text: String, onClick: (String) -> Unit,
+                    buttonColor: Color = Color(0xFF445e91),
+                    textColor: Color = Color.White,
+                    topStartCorner: Int = 0, bottomStartCorner: Int = 0,
+                    topEndCorner: Int = 0, bottomEndCorner: Int = 0,
+                    alpha: Float = 1.0f) {
+    Button(
+        onClick = { onClick(text) },
+        contentPadding = PaddingValues(0.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = buttonColor.copy(alpha = alpha)),
+        shape = MaterialTheme.shapes.small.copy(
+            topStart = CornerSize(topStartCorner.dp),
+            bottomStart = CornerSize(bottomStartCorner.dp),
+            topEnd = CornerSize(topEndCorner.dp),
+            bottomEnd = CornerSize(bottomEndCorner.dp)),
+        modifier = Modifier
+            .fillMaxHeight()
+            .padding(0.dp)
+    ) {
+        Text(text,
+            Modifier.padding(0.dp),
+            color = textColor.copy(alpha = alpha))
+    }
+}
+
+@Composable
+fun RegTextField(text: String, onTextChange: (String) -> Unit,
+                 backgroundColor: Color, description: String, imageVector: ImageVector) {
+    TextField(value = text,
+        onValueChange = onTextChange,
+        modifier = Modifier
+            .width(220.dp)
+            .border(
+                width = 0.5.dp,
+                color = Color.Black,
+                shape = RoundedCornerShape(4.dp)
+            ),
+        colors = TextFieldDefaults.colors(
+            focusedContainerColor = backgroundColor,
+            unfocusedContainerColor = backgroundColor,
+            focusedIndicatorColor = Color.Transparent,
+            unfocusedIndicatorColor = Color.Transparent,
+            disabledIndicatorColor = Color.Transparent
+        ),
+        label = { Text(description) },
+        singleLine = true,
+        leadingIcon = {
+            Icon(imageVector = imageVector,
+                contentDescription = description)
+        })
+}
+
+// Extension function to convert JsonObject to Map
+fun JsonObject.toMap(): Map<String, Any?> = entries.associate { (key, value) ->
+    key to when (value) {
+        is JsonObject -> value.toMap()
+        is JsonArray -> value.toList().map { if (it is JsonObject) it.toMap() else it.toString() }
+        JsonNull -> null
+        else -> value.toString()
+    }
+}
+
+fun APIRequest(endpoint: String, params: Map<String, String>, requestMethod: String): Map<String, Any?> {
+    val baseUrl = "https://trbdbmpwgt.us-east-2.awsapprunner.com"
+    val url = "$baseUrl/$endpoint"
+
+    val query = params.map { (k, v) -> "${URLEncoder.encode(k, "UTF-8")}=${URLEncoder.encode(v, "UTF-8")}" }
+        .joinToString("&")
+
+    try {
+        val fullUrl = if (requestMethod == "GET") "$url?$query" else url
+        val connection = URL(fullUrl).openConnection() as HttpURLConnection
+        connection.requestMethod = requestMethod
+        connection.connectTimeout = 5000
+        connection.readTimeout = 5000
+
+        if (requestMethod == "POST") {
+            connection.doOutput = true
+            connection.outputStream.use { os ->
+                os.write(query.toByteArray())
+            }
+        }
+
+        val responseCode = connection.responseCode
+        return if (responseCode == HttpURLConnection.HTTP_OK) {
+            val response = connection.inputStream.bufferedReader().use { it.readText() }
+            Json.parseToJsonElement(response).jsonObject.toMap()
+        } else {
+            val errorStream = connection.errorStream
+            val errorResponse = errorStream?.bufferedReader()?.use { it.readText() } ?: "No error details available"
+            mapOf("error" to "HTTP $responseCode", "message" to errorResponse)
+        }
+    } catch (e: Exception) {
+        return mapOf("error" to "Exception", "message" to e.message)
+    }
+}
+
+
+@Composable
+fun RegistrationScreen(context: Context, userIDKey: Preferences.Key<Int>,
+                       userEmailKey: Preferences.Key<String>,
+                       userPasswordKey: Preferences.Key<String>,
+                       userUsernameKey: Preferences.Key<String>) {
+
+    val backgroundColor = Color(0xFFb2e1f9)
+    val surfaceColor = Color(0xFF8ac7e6)
+    val cardColor = Color(0xFF62aed2)
+
+    var selectedButton by rememberSaveable { mutableStateOf("Register") }
+
+    var emailText by rememberSaveable { mutableStateOf("") }
+    var passwordText by rememberSaveable { mutableStateOf("") }
+    var usernameText by rememberSaveable { mutableStateOf("") }
+
+
+    Box(modifier = Modifier
+        .fillMaxSize()
+        .background(color = backgroundColor)
+    ) {
+
+        // Login or Registration Field
+        Surface (
+            color = surfaceColor,
+            shape = CutCornerShape(20.dp),
+            shadowElevation = 7.dp,
+            modifier = Modifier
+                .align(Alignment.Center)
+                .then(
+                    if (selectedButton == "Login") {
+                        Modifier.size(300.dp)
+                    } else {
+                        Modifier
+                            .width(300.dp)
+                            .height(380.dp)
+                    }
+                )
+
+        ) {
+
+            // Content in surface
+            Column (modifier = Modifier
+                .fillMaxSize()) {
+
+                // "Login / Register" Box
+                Box (modifier = Modifier
+                    .fillMaxWidth(),
+                    contentAlignment = Alignment.Center) {
+
+                    val roundCornerMeasure = 20
+
+                    Card (
+                        shape = RoundedCornerShape(roundCornerMeasure.dp),
+                        colors = CardDefaults.cardColors(containerColor = cardColor),
+                        border = BorderStroke(1.dp, Color.Black),
+                        modifier = Modifier
+                            .padding(top = 20.dp)
+                    ) {
+
+                        // "Login / Register" text
+                        Row (
+                            Modifier
+                                .height(IntrinsicSize.Min)
+                        ) {
+                            if (selectedButton == "Login") {
+                                // Login button
+                                RegScreenButton(
+                                    "Login",
+                                    { buttonText -> selectedButton = buttonText },
+                                    topEndCorner = roundCornerMeasure,
+                                    bottomEndCorner = roundCornerMeasure
+                                )
+
+                                // Divider
+                                HorizontalDivider(Modifier.size(3.dp))
+
+                                // Register button
+                                RegScreenButton(
+                                    "Register",
+                                    { buttonText -> selectedButton = buttonText },
+                                    //buttonColor = cardColor, textColor = cardColor,
+                                    topStartCorner = roundCornerMeasure,
+                                    bottomStartCorner = roundCornerMeasure,
+                                    alpha = 0f
+                                )
+                            } else if (selectedButton == "Register") {
+                                // Login button
+                                RegScreenButton(
+                                    "Login",
+                                    { buttonText -> selectedButton = buttonText },
+                                    buttonColor = cardColor, textColor = cardColor,
+                                    topEndCorner = roundCornerMeasure,
+                                    bottomEndCorner = roundCornerMeasure,
+                                    alpha = 0f
+                                )
+
+                                // Divider
+                                HorizontalDivider(Modifier.size(3.dp))
+
+                                // Register button
+                                RegScreenButton(
+                                    "Register",
+                                    { buttonText -> selectedButton = buttonText },
+                                    topStartCorner = roundCornerMeasure,
+                                    bottomStartCorner = roundCornerMeasure
+                                )
+                            }
+                        }
+                    }
+                }
+                // Data Fields
+                Box(modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 20.dp),
+                    contentAlignment = Alignment.Center) {
+
+                    Column {
+
+                        RegTextField(emailText, {newText -> emailText = newText},
+                            cardColor, "email", Icons.Default.Mail)
+                        VerticalDivider(Modifier.size(15.dp))
+                        RegTextField(passwordText, {newText -> passwordText = newText},
+                            cardColor, "password", Icons.Default.Lock)
+
+                        if (selectedButton == "Register") {
+                            VerticalDivider(Modifier.size(15.dp))
+                            RegTextField(usernameText, {newText -> usernameText = newText},
+                                cardColor, "username", Icons.Default.AccountCircle)
+                        }
+
+                        // Submit button
+                        val coroutineScope = rememberCoroutineScope()
+
+//                        val context = LocalContext.current - NO NEED
+                        Box(modifier = Modifier
+                            .padding(horizontal = 63.dp, vertical = 25.dp)
+                        ) {
+                            Button(onClick = {
+                                coroutineScope.launch(Dispatchers.IO) {
+                                    if (selectedButton == "Register") {
+
+                                        val params = mapOf(
+                                            "username" to usernameText,
+                                            "email" to emailText,
+                                            "password" to passwordText
+                                        )
+                                        val result = APIRequest("createUSERS", params, "POST")
+                                        println(result)
+
+                                    } else if (selectedButton == "Login") {
+                                        val params = mapOf(
+                                            "email" to emailText
+                                        )
+                                        val result = APIRequest("readUSERS", params, "GET")
+                                        println(result)
+                                        if (result["data"]!=null) {
+                                            val data = result["data"] as Map<String, Any>
+
+                                            context.userDataStore.edit { preferences ->
+                                                preferences[userIDKey] = (data["id"] as String).toInt()
+                                                preferences[userEmailKey] = data["email"] as String
+                                                preferences[userPasswordKey] = data["password"] as String
+                                                preferences[userUsernameKey] = data["username"] as String
+                                            }
+                                            println("Problem is not here")
+                                        } else {
+                                            context.userDataStore.edit { preferences ->
+                                                preferences[userIDKey] = -42
+                                                preferences[userEmailKey] = ""
+                                                preferences[userPasswordKey] = ""
+                                                preferences[userUsernameKey] = ""
+                                            }
+                                        }
+                                    }
+                                }
+
+                            })
+                            {
+                                Text("Submit")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Preview(showBackground = true, widthDp = 420, heightDp = 900)
 @Composable
 fun Preview() {
     HealthTrackerTheme {
-        MainScreen()
+        ScreenNavigator()
     }
 }

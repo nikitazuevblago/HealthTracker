@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: healthtracker
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: healthtracker
+  template:
+    metadata:
+      labels:
+        app: healthtracker
+    spec:
+      containers:
+      - name: healthtracker
+        image: 208561826875.dkr.ecr.us-east-2.amazonaws.com/healthtrackerr:latest
+        ports:
+        - containerPort: 8000
