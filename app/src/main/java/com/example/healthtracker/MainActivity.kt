@@ -83,14 +83,18 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CornerSize
 import androidx.compose.foundation.shape.CutCornerShape
 import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Mail
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Divider
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldColors
 import androidx.compose.material3.TextFieldDefaults
@@ -111,12 +115,19 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.NavController
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
+import androidx.navigation.compose.rememberNavController
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 import kotlinx.serialization.json.*
+import java.util.Locale
+
 
 
 val Context.userDataStore: DataStore<Preferences> by preferencesDataStore(name = "userData")
@@ -148,7 +159,7 @@ fun ScreenNavigator() {
     val userID by context.userDataStore.data
         .map { preferences ->
             preferences[userIDKey] ?: -42
-        }.collectAsState(initial = 0) as State<Int>
+        }.collectAsState(initial = -42) as State<Int>
     val userEmailKey = stringPreferencesKey("email")
     val userEmail by context.userDataStore.data
         .map { preferences ->
@@ -166,14 +177,15 @@ fun ScreenNavigator() {
         }.collectAsState(initial = "") as State<String>
 
     if (userUsername == "" && userID == -42
-        && userPassword =="" && userUsername == "") {
+        && userPassword =="") {
 
         RegistrationScreen(context, userIDKey, userEmailKey,
             userPasswordKey, userUsernameKey)
         Text("Hello")
 
     } else {
-        MainScreen()
+        MainScreen(context, userIDKey, userEmailKey,
+            userPasswordKey, userUsernameKey)
     }
 }
 
@@ -369,16 +381,75 @@ fun HealthStat(achievementText: String, backgroundColor: Color,
         }
     }
 }
+@Composable
+fun TabBar(navController: NavController, containerColor: Color) {
+    NavigationBar(containerColor = containerColor) {
+        val navBackStackEntry by navController.currentBackStackEntryAsState()
+        val currentRoute = navBackStackEntry?.destination?.route
+        listOf(
+            "home" to Icons.Default.Home,
+            "profile" to Icons.Default.Person
+        ).forEach { (route, icon) ->
+            NavigationBarItem(
+                icon = { Icon(icon, contentDescription = null) },
+                label = { Text(route.replaceFirstChar {
+                    if (it.isLowerCase()) it.titlecase(Locale.getDefault())
+                    else it.toString()
+                }) },
+                selected = currentRoute == route,
+                onClick = {
+                    if (currentRoute != route) {
+                        navController.navigate(route) {
+                            // Avoid multiple copies of the same destination when
+                            // reselecting the same item
+                            launchSingleTop = true
+                            // Restore state when reselecting a previously selected item
+                            restoreState = true
+                        }
+                    }
+                }
+            )
+        }
+    }
+}
 
 @Composable
-fun MainScreen() {
+fun MainScreen(context: Context, userIDKey: Preferences.Key<Int>,
+               userEmailKey: Preferences.Key<String>,
+               userPasswordKey: Preferences.Key<String>,
+               userUsernameKey: Preferences.Key<String>) {
+    val navController = rememberNavController()
     val backgroundColor = Color(0xFFb2e1f9)
-    Box(modifier = Modifier
-        .fillMaxSize()
-        .background(backgroundColor)
-    ) {
-        Column (modifier = Modifier.padding(top = 30.dp)) {
-            Text(text = "Daily Wellness Indices",
+
+    Scaffold(
+        containerColor = backgroundColor, // Set the background color for the entire Scaffold
+        bottomBar = { TabBar(navController = navController, containerColor = backgroundColor) }
+    ) { innerPadding ->
+        NavHost(
+            navController = navController,
+            startDestination = "home",
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(bottom = innerPadding.calculateBottomPadding()) // Only apply bottom padding
+        ) {
+            composable("home") {
+                HomeScreen(backgroundColor)
+            }
+            composable("profile") {
+                ProfileScreen(context, userIDKey, userEmailKey,
+                    userPasswordKey, userUsernameKey)
+            }
+            // Add other destinations as needed
+        }
+    }
+}
+
+@Composable
+fun HomeScreen(backgroundColor: Color) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.padding(top = 30.dp)) {
+            Text(
+                text = "Daily Wellness Indices",
                 fontWeight = FontWeight(1000),
                 fontSize = 30.sp,
                 color = Color(0xFF7E57C2),
@@ -401,6 +472,131 @@ fun MainScreen() {
                 R.drawable.calories, backgroundColor, LocalContext.current)
             HealthStat("Exercise", Color(0xFFFF7043),
                 R.drawable.exercise, backgroundColor, LocalContext.current)
+        }
+    }
+}
+
+
+@Composable
+fun ProfileButton(text: String, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp, vertical = 20.dp)
+    ) {
+        Button(
+            onClick = onClick,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(80.dp), // Set a specific height for the button
+            colors = ButtonDefaults.buttonColors(contentColor=Color(0xFFb2e1f9),
+                containerColor = Color(0xFF4285f4)),
+            shape = RoundedCornerShape(20.dp), // This creates square corners
+            contentPadding = PaddingValues(0.dp) // This removes default padding
+        ) {
+            Text(text = text,
+                fontSize = 20.sp,
+                fontWeight = FontWeight(1000))
+        }
+    }
+}
+
+
+fun APIRequest(endpoint: String, params: Map<String, String>, requestMethod: String): Map<String, Any?> {
+    val baseUrl = "https://trbdbmpwgt.us-east-2.awsapprunner.com"
+
+    val query = params.map { (k, v) ->
+        "${URLEncoder.encode(k, "UTF-8")}=${URLEncoder.encode(v, "UTF-8")}"
+    }.joinToString("&")
+
+    val urlString = "$baseUrl/$endpoint?$query"
+
+    try {
+        val connection = URL(urlString).openConnection() as HttpURLConnection
+        connection.requestMethod = requestMethod
+        connection.connectTimeout = 5000
+        connection.readTimeout = 5000
+
+        val responseCode = connection.responseCode
+        return if (responseCode == HttpURLConnection.HTTP_OK) {
+            val response = connection.inputStream.bufferedReader().use { it.readText() }
+            Json.parseToJsonElement(response).jsonObject.toMap()
+        } else {
+            val errorStream = connection.errorStream
+            val errorResponse = errorStream?.bufferedReader()?.use { it.readText() } ?: "No error details available"
+            mapOf("error" to "HTTP $responseCode", "message" to errorResponse)
+        }
+    } catch (e: Exception) {
+        return mapOf("error" to "Exception", "message" to e.message)
+    }
+}
+
+
+@Composable
+fun ProfileScreen(context: Context, userIDKey: Preferences.Key<Int>,
+                  userEmailKey: Preferences.Key<String>,
+                  userPasswordKey: Preferences.Key<String>,
+                  userUsernameKey: Preferences.Key<String>) {
+    val coroutineScope = rememberCoroutineScope()
+    // Your profile screen content
+    Column(
+        modifier = Modifier.fillMaxSize()
+    ) {
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .background(Color.Blue)
+        ) {
+            Text(
+                text = "AVG daily index",
+                color = Color.White,
+                modifier = Modifier.align(Alignment.Center)
+            )
+        }
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+        ) {
+            Column {
+                Row (modifier = Modifier.padding(top=50.dp)) {}
+
+                // Example functions to be called on button click
+                fun logout() {
+                    coroutineScope.launch {
+                        context.userDataStore.edit { preferences ->
+                            preferences[userIDKey] = -42
+                            preferences[userEmailKey] = ""
+                            preferences[userPasswordKey] = ""
+                            preferences[userUsernameKey] = ""
+                        }
+                    }
+                }
+
+                fun deleteAccount() {
+                    coroutineScope.launch(Dispatchers.IO) {
+                        context.userDataStore.edit { preferences ->
+                            val params = mapOf(
+                                "id" to preferences[userIDKey].toString()
+                            )
+                            val result = APIRequest("deleteUSERS", params, "DELETE")
+                            println(result)
+                        }
+
+
+                    }
+                }
+
+                ProfileButton("Logout") {
+                    logout()
+                }
+                ProfileButton("Delete account") {
+                    deleteAccount()
+                    logout()
+                }
+
+            }
         }
     }
 }
@@ -466,41 +662,6 @@ fun JsonObject.toMap(): Map<String, Any?> = entries.associate { (key, value) ->
         is JsonArray -> value.toList().map { if (it is JsonObject) it.toMap() else it.toString() }
         JsonNull -> null
         else -> value.toString()
-    }
-}
-
-fun APIRequest(endpoint: String, params: Map<String, String>, requestMethod: String): Map<String, Any?> {
-    val baseUrl = "https://trbdbmpwgt.us-east-2.awsapprunner.com"
-    val url = "$baseUrl/$endpoint"
-
-    val query = params.map { (k, v) -> "${URLEncoder.encode(k, "UTF-8")}=${URLEncoder.encode(v, "UTF-8")}" }
-        .joinToString("&")
-
-    try {
-        val fullUrl = if (requestMethod == "GET") "$url?$query" else url
-        val connection = URL(fullUrl).openConnection() as HttpURLConnection
-        connection.requestMethod = requestMethod
-        connection.connectTimeout = 5000
-        connection.readTimeout = 5000
-
-        if (requestMethod == "POST") {
-            connection.doOutput = true
-            connection.outputStream.use { os ->
-                os.write(query.toByteArray())
-            }
-        }
-
-        val responseCode = connection.responseCode
-        return if (responseCode == HttpURLConnection.HTTP_OK) {
-            val response = connection.inputStream.bufferedReader().use { it.readText() }
-            Json.parseToJsonElement(response).jsonObject.toMap()
-        } else {
-            val errorStream = connection.errorStream
-            val errorResponse = errorStream?.bufferedReader()?.use { it.readText() } ?: "No error details available"
-            mapOf("error" to "HTTP $responseCode", "message" to errorResponse)
-        }
-    } catch (e: Exception) {
-        return mapOf("error" to "Exception", "message" to e.message)
     }
 }
 
@@ -654,6 +815,20 @@ fun RegistrationScreen(context: Context, userIDKey: Preferences.Key<Int>,
                                         )
                                         val result = APIRequest("createUSERS", params, "POST")
                                         println(result)
+                                        val paramsLogin = mapOf(
+                                            "email" to emailText
+                                        )
+                                        val resultLogin = APIRequest("readUSERS", paramsLogin, "GET")
+                                        println(resultLogin)
+                                        val data = resultLogin["data"] as Map<String, Any>
+                                        println(data)
+
+                                        context.userDataStore.edit { preferences ->
+                                            preferences[userIDKey] = (data["id"] as String).toInt()
+                                            preferences[userEmailKey] = data["email"] as String
+                                            preferences[userPasswordKey] = data["password"] as String
+                                            preferences[userUsernameKey] = data["username"] as String
+                                        }
 
                                     } else if (selectedButton == "Login") {
                                         val params = mapOf(
