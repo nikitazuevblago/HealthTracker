@@ -90,6 +90,7 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Divider
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -101,6 +102,7 @@ import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.text.style.TextAlign
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.withContext
@@ -151,41 +153,42 @@ class MainActivity : ComponentActivity() {
         }
     }
 }
-
 @Composable
 fun ScreenNavigator() {
     val context = LocalContext.current
     val userIDKey = intPreferencesKey("id")
-    val userID by context.userDataStore.data
-        .map { preferences ->
-            preferences[userIDKey] ?: -42
-        }.collectAsState(initial = -42) as State<Int>
     val userEmailKey = stringPreferencesKey("email")
-    val userEmail by context.userDataStore.data
-        .map { preferences ->
-            preferences[userEmailKey] ?: ""
-        }.collectAsState(initial = "") as State<String>
     val userPasswordKey = stringPreferencesKey("password")
-    val userPassword by context.userDataStore.data
-        .map { preferences ->
-            preferences[userPasswordKey] ?: ""
-        }.collectAsState(initial = "") as State<String>
-    val userUsernameKey = stringPreferencesKey("password")
-    val userUsername by context.userDataStore.data
-        .map { preferences ->
-            preferences[userUsernameKey] ?: ""
-        }.collectAsState(initial = "") as State<String>
+    val userUsernameKey = stringPreferencesKey("username")
 
-    if (userUsername == "" && userID == -42
-        && userPassword =="") {
+    var isLoading by remember { mutableStateOf(true) }
+    var isLoggedIn by remember { mutableStateOf(false) }
 
-        RegistrationScreen(context, userIDKey, userEmailKey,
-            userPasswordKey, userUsernameKey)
-        Text("Hello")
+    LaunchedEffect(Unit) {
+        context.userDataStore.data.collect { preferences ->
+            val userID = preferences[userIDKey] ?: -42
+            val userEmail = preferences[userEmailKey] ?: ""
+            val userPassword = preferences[userPasswordKey] ?: ""
+            val userUsername = preferences[userUsernameKey] ?: ""
 
-    } else {
-        MainScreen(context, userIDKey, userEmailKey,
-            userPasswordKey, userUsernameKey)
+            isLoggedIn = userID != -42 && userEmail.isNotEmpty() && userPassword.isNotEmpty() && userUsername.isNotEmpty()
+            isLoading = false
+        }
+    }
+
+    when {
+        isLoading -> {
+            // Show a loading indicator
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
+            }
+        }
+        !isLoggedIn -> {
+            RegistrationScreen(context, userIDKey, userEmailKey, userPasswordKey, userUsernameKey)
+        }
+        else -> {
+            MainScreen(context, userIDKey, userEmailKey, userPasswordKey, userUsernameKey)
+        }
     }
 }
 
@@ -530,29 +533,52 @@ fun APIRequest(endpoint: String, params: Map<String, String>, requestMethod: Str
         return mapOf("error" to "Exception", "message" to e.message)
     }
 }
-
-
 @Composable
 fun ProfileScreen(context: Context, userIDKey: Preferences.Key<Int>,
                   userEmailKey: Preferences.Key<String>,
                   userPasswordKey: Preferences.Key<String>,
                   userUsernameKey: Preferences.Key<String>) {
     val coroutineScope = rememberCoroutineScope()
-    // Your profile screen content
+
+    // Collect data from DataStore
+    val waterQuantity by collectAsState(context, "Water", 0)
+    val steps by collectAsState(context, "Steps", 0)
+    val calories by collectAsState(context, "Calories", 0)
+    val exercise by collectAsState(context, "Exercise", 0)
+
+    // Calculate health index based on all factors
+    val healthIndex = calculateHealthIndex(waterQuantity, steps, calories, exercise)
+
     Column(
         modifier = Modifier.fillMaxSize()
     ) {
         Box(
+            contentAlignment = Alignment.Center,
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
-                .background(Color.Blue)
         ) {
-            Text(
-                text = "AVG daily index",
-                color = Color.White,
-                modifier = Modifier.align(Alignment.Center)
-            )
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally // Center align column content
+            ) {
+                Text(
+                    text = "Today's Health Index",
+                    color = Color.White,
+                    fontSize = 40.sp,
+                    fontWeight = FontWeight(1000),
+                    textAlign = TextAlign.Center,
+                )
+                Text(
+                    text = "$healthIndex/10",
+                    color = Color.White,
+                    fontSize = 70.sp,
+                    fontWeight = FontWeight(1000),
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .fillMaxWidth() // Ensure the Text takes full width
+                        .padding(top = 50.dp)
+                )
+            }
         }
         Box(
             modifier = Modifier
@@ -560,9 +586,8 @@ fun ProfileScreen(context: Context, userIDKey: Preferences.Key<Int>,
                 .fillMaxWidth()
         ) {
             Column {
-                Row (modifier = Modifier.padding(top=50.dp)) {}
+                Row(modifier = Modifier.padding(top = 50.dp)) {}
 
-                // Example functions to be called on button click
                 fun logout() {
                     coroutineScope.launch {
                         context.userDataStore.edit { preferences ->
@@ -583,8 +608,6 @@ fun ProfileScreen(context: Context, userIDKey: Preferences.Key<Int>,
                             val result = APIRequest("deleteUSERS", params, "DELETE")
                             println(result)
                         }
-
-
                     }
                 }
 
@@ -595,10 +618,54 @@ fun ProfileScreen(context: Context, userIDKey: Preferences.Key<Int>,
                     deleteAccount()
                     logout()
                 }
-
             }
         }
     }
+}
+
+@Composable
+fun collectAsState(context: Context, key: String, defaultValue: Int): State<Int> {
+    val dataStoreKey = intPreferencesKey(key)
+    return context.userDataStore.data
+        .map { preferences ->
+            preferences[dataStoreKey] ?: defaultValue
+        }.collectAsState(initial = defaultValue)
+}
+
+fun calculateHealthIndex(water: Int, steps: Int, calories: Int, exercise: Int): Int {
+    val waterScore = when {
+        water >= 2000 -> 2.5
+        water >= 1500 -> 2.0
+        water >= 1000 -> 1.5
+        water >= 500 -> 1.0
+        else -> 0.5
+    }
+
+    val stepsScore = when {
+        steps >= 10000 -> 2.5
+        steps >= 7500 -> 2.0
+        steps >= 5000 -> 1.5
+        steps >= 2500 -> 1.0
+        else -> 0.5
+    }
+
+    val caloriesScore = when {
+        calories >= 2000 -> 2.5
+        calories >= 1500 -> 2.0
+        calories >= 1000 -> 1.5
+        calories >= 500 -> 1.0
+        else -> 0.5
+    }
+
+    val exerciseScore = when {
+        exercise >= 60 -> 2.5
+        exercise >= 45 -> 2.0
+        exercise >= 30 -> 1.5
+        exercise >= 15 -> 1.0
+        else -> 0.5
+    }
+
+    return (waterScore + stepsScore + caloriesScore + exerciseScore).toInt()
 }
 
 
